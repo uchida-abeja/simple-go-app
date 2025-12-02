@@ -16,17 +16,6 @@ import (
 
 var s3Client *s3.Client
 
-type minioResolver struct {
-	endpoint string
-}
-
-func (r *minioResolver) ResolveEndpoint(service, region string) (aws.Endpoint, error) {
-	return aws.Endpoint{
-		URL:           "http://" + r.endpoint, // 実際は https の場合もあるので注意
-		SigningRegion: "us-east-1",            // Minio のデフォルト
-	}, nil
-}
-
 func main() {
 	// 1. Minio 接続設定の初期化
 	initS3Client()
@@ -54,20 +43,19 @@ func initS3Client() {
 	}
 
 	// カスタムエンドポイント（Minio用）の設定
-	resolver := &minioResolver{endpoint: endpoint}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithEndpointResolver(resolver),
+		config.WithRegion("us-east-1"),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
 	)
 	if err != nil {
 		panic(err)
 	}
 
-	// PathStyle を有効にするのが Minio 接続のポイントです
+	// PathStyle を有効にし、カスタムエンドポイントを設定するのが Minio 接続のポイントです
 	s3Client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String("http://" + endpoint)
 		o.UsePathStyle = true
 	})
 }
