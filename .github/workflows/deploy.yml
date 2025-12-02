@@ -1,0 +1,111 @@
+name: Build and Update Manifest
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ghcr.io/uchida-abeja/simple-go-app
+  MANIFEST_REPO: uchida-abeja/learn-k8s
+  OVERLAY_PATH: apps/simple-go-app/overlays/dev
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout App Repo
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image tag from commit SHA
+        id: image_tag
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "Image tag: ${SHORT_SHA}"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.image_tag.outputs.tag }}
+            ${{ env.IMAGE_NAME }}:latest
+
+  update-manifest:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout App Repo for commit SHA
+        uses: actions/checkout@v4
+
+      - name: Generate image tag
+        id: image_tag
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "tag=${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Checkout Manifest Repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MANIFEST_REPO }}
+          token: ${{ secrets.PAT_FOR_GITOPS }}
+          path: infra-repo
+
+      - name: Install Kustomize
+        working-directory: infra-repo
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Update image tag in kustomization
+        working-directory: infra-repo/${{ env.OVERLAY_PATH }}
+        run: |
+          # Add images section if it doesn't exist
+          if ! grep -q "^images:" kustomization.yaml; then
+            echo "" >> kustomization.yaml
+            echo "images:" >> kustomization.yaml
+            echo "  - name: simple-go-app-image" >> kustomization.yaml
+            echo "    newName: ${{ env.IMAGE_NAME }}" >> kustomization.yaml
+            echo "    newTag: ${{ steps.image_tag.outputs.tag }}" >> kustomization.yaml
+          else
+            # Update existing images section
+            kustomize edit set image simple-go-app-image=${{ env.IMAGE_NAME }}:${{ steps.image_tag.outputs.tag }}
+          fi
+          
+          echo "Updated kustomization.yaml:"
+          cat kustomization.yaml
+
+      - name: Commit and push changes
+        working-directory: infra-repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          if git diff --quiet; then
+            echo "No changes to commit"
+          else
+            git add ${{ env.OVERLAY_PATH }}/kustomization.yaml
+            git commit -m "Update simple-go-app image tag to ${{ steps.image_tag.outputs.tag }}"
+            git push
+          fi
