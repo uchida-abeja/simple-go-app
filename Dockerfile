@@ -1,31 +1,27 @@
-# 🏗️ ステージ1: ビルド環境 (Builder)
-# Goのコンパイラが含まれる公式イメージを使います
-FROM golang:1.23-alpine AS builder
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 
-# ワーキングディレクトリを設定
+FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine3.24@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
 WORKDIR /app
 
-# 依存関係のファイルを先にコピー（キャッシュ効率のため）
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
-# ソースコードをコピーしてビルド
 COPY . .
-# CGO_ENABLED=0: 依存ライブラリを含まない完全な静的バイナリを作る設定
-# -o main: 出力ファイル名を main にする
-RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -ldflags="-s -w" -o /out/main .
 
-# 🚀 ステージ2: 実行環境 (Runner)
-# 軽量な Alpine Linux を使います（Distrolessなども一般的です）
-FROM alpine:latest
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
-# セキュリティのためにルート以外のユーザーを作成・使用（推奨）
 WORKDIR /app
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
+COPY --from=builder --chown=65532:65532 /out/main ./main
 
-# ステージ1で作ったバイナリだけをコピーしてくる
-COPY --from=builder /app/main .
-
-# コンテナ起動時に実行するコマンド
+USER 65532:65532
+EXPOSE 8080
 CMD ["./main"]
