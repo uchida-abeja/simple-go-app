@@ -74,6 +74,8 @@ docker run --rm \
 
 アプリケーションリポジトリからマニフェストリポジトリのbot専用ブランチへpushするため、SSH deploy keyを1組用意します。従来の`PAT_FOR_GITOPS`は使いません。
 
+write権限を付けたdeploy keyは、登録先リポジトリの特定ブランチだけに権限を絞れません。workflowは`deploy/simple-go-app`だけを更新しますが、鍵そのものはそれより強い権限を持ちます。鍵を登録する前に、`learn-k8s`の`main`をrulesetまたはbranch protectionで保護し、pull requestを経由しないpushを禁止してください。deploy keyをbypass対象にせず、branch protectionを使う場合は`Do not allow bypassing the above settings`も有効にします。設定と確認方法は[`learn-k8s`の「デプロイPR workflow」](https://github.com/uchida-abeja/learn-k8s#デプロイpr-workflow)にまとめています。
+
 秘密鍵を誤ってリポジトリへ追加しないよう、鍵はリポジトリの外にある一時ディレクトリで生成します。
 
 ```bash
@@ -90,19 +92,32 @@ ssh-keygen -q -t ed25519 -N "" \
   -f "${KEY_PATH}"
 ```
 
-1. `${KEY_PATH}.pub`を`learn-k8s`の`Settings → Deploy keys`へ登録し、`Allow write access`を有効にする
-2. 秘密鍵`${KEY_PATH}`を、このリポジトリのActions secret `GITOPS_DEPLOY_KEY`へ登録する
-3. 登録後に`cleanup_key`を実行し、`trap - EXIT`で終了時処理を解除する
+1. `learn-k8s`の`main`が保護されていることを確認する
+2. `${KEY_PATH}.pub`を`learn-k8s`の`Settings → Deploy keys`へ登録し、`Allow write access`を有効にする
+3. 秘密鍵が残っている間に、[`learn-k8s`の「デプロイPR workflow」](https://github.com/uchida-abeja/learn-k8s#デプロイpr-workflow)にある手順で、deploy keyによる`main`への直接pushが保護ルールによって拒否されることを確認する
+4. 秘密鍵`${KEY_PATH}`を、このリポジトリのActions secret `GITOPS_DEPLOY_KEY`へ登録する
+5. 登録後に`cleanup_key`を実行してローカルの一時鍵ファイルだけを削除し、`trap - EXIT`で終了時処理を解除する
 
-GitHub CLIで2を行う場合は、リポジトリを明示します。
+GitHub CLIで4を行う場合は、リポジトリを明示します。
 
 ```bash
+gh auth status --hostname github.com
+
 gh secret set GITOPS_DEPLOY_KEY \
   --repo uchida-abeja/simple-go-app \
   < "${KEY_PATH}"
 
 cleanup_key
 trap - EXIT
+```
+
+ここで`gh auth status`が確認するのは、`gh secret set`が使うGitHub APIの認証です。手順3のローカル`git push`はdeploy keyによるSSH認証と`main`保護を確認し、登録後のworkflow成功はActions runnerが同じ鍵でデプロイブランチを更新できることを確認します。`ssh -T git@github.com`だけでは、対象リポジトリへのwrite権限や`main`保護の有効性までは証明できません。
+
+旧構成から移行した場合は、`GITOPS_DEPLOY_KEY`を使うworkflowの成功を確認してから、不要になった旧Secretを削除します。`gh secret list`はSecret名だけを表示し、値は表示しません。
+
+```bash
+gh secret list --repo uchida-abeja/simple-go-app
+gh secret delete PAT_FOR_GITOPS --repo uchida-abeja/simple-go-app
 ```
 
 `GITHUB_TOKEN`はGHCRへのpushにだけ使い、ジョブ単位で`packages: write`を付与しています。Actionsとベースイメージはcommit SHAまたはdigest、KustomizeはバージョンとSHA-256を固定しています。更新時はDependabot等で新しい値を確認してから変更してください。
